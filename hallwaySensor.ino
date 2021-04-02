@@ -1,102 +1,131 @@
-#include "ESP8266WiFi.h"
-#include <ESP8266HTTPClient.h>
-#include <WiFiClient.h>
+#include "WiFi.h"
+#include <HTTPClient.h>
 
-extern "C"
-{
-  #include "gpio.h"
-}
-
-extern "C"
-{
-  //#include "user_interface.h"
-}
-
+#define DEBUG 0
+#define BUTTON_PIN_BITMASK 0x200000000 // 2^33 in hex
+#define ON 1
+#define OFF 0
 #define ISR_PREFIX ICACHE_RAM_ATTR
 
 //Hardware parameters:
-const int PIR_PIN = 2;
+const int PIR_PIN = 33;
 
 //Wifi station mode (STA) parameters
 const char* network_ssid = "Kalat_ja_Rapu_2G"; //"TeeQNote9"; //"Kalat_ja_Rapu_2G";
 const char* network_password = "rutaQlli";
 
-volatile bool turnLightsOn = false;
+volatile unsigned long lightTimerStart_ms = 0;
+const unsigned long lightsOnThreshold_ms = 60 * 1000;
 
 //Handles interrupt caused by the button press
-/*ISR_PREFIX void handleInterrupt()
+ISR_PREFIX void handleInterrupt()
 {
+  println("Interrupt");
+  lightTimerStart_ms = millis();
+}
 
-  if (digitalRead(PIR_PIN) == HIGH)
+void print(const String &msg)
+{
+  if(DEBUG)
   {
-    //Serial.println("HIGH");
-    turnLightsOn = true;
+    Serial.print(msg);
   }
+}
 
-}*/
+void println(const String &msg)
+{
+  print(msg + '\n');
+}
 
 void connectWifi()
 {
-  
-}
-
-void setup() {
-  pinMode(PIR_PIN, INPUT);
-  
-  //Serial connection for debugging purposes
-  Serial.begin(115200);
-  delay(100);
-
   //Explicitely define this is a station, not access point
   WiFi.mode(WIFI_STA);
-
+  
   //Connect to wifi network:
   WiFi.begin(network_ssid, network_password);
 
-  Serial.println("Wifi (STA) parameters:");
-  Serial.print("- ssid: ");
-  Serial.println(network_ssid);
-  Serial.print("- password: ");
-  Serial.println(network_password);
-
   while (WiFi.status() != WL_CONNECTED)
   {
-    Serial.println("Connecting to wifi...");
-    delay(1000);
+    delay(10);
   }
 
-  Serial.println("Wifi connected");
+  println("Wifi connected");
+}
 
-  Serial.println("Starting to sleep...");
-  ESP.deepSleep(0);
-  Serial.println("I am awake!");
+int lights(bool turnOn)
+{
+  if(WiFi.status()== WL_CONNECTED)
+  {
+    HTTPClient http;
+    http.begin(String("http://192.168.1.112/api/pB-JbLG1vkk-6axlykmaEBOzM4y3u8lUUZVgbj8M/lights/1/state"));
+    http.addHeader("Content-Type", "text/plain");
+    http.addHeader("Connection", "close");
 
-  //attachInterrupt(digitalPinToInterrupt(PIR_PIN), handleInterrupt, CHANGE);
+    String put_string;
+    put_string = "{\"on\":";
+
+    if (turnOn)
+    {
+      put_string += "true";
+    }
+    else
+    {
+      put_string += "false";
+    }
+    put_string += "}";
+    int httpResponseCode = http.PUT(put_string);
+    http.end();
+    
+    return httpResponseCode;
+  }
+  return 0;
+}
+
+void setup() {
+
+  //Serial connection for debugging purposes
+  if(DEBUG)
+  {
+    Serial.begin(115200);
+    delay(10);
+  }
+
+  pinMode(PIR_PIN, INPUT);
+  attachInterrupt(digitalPinToInterrupt(PIR_PIN), handleInterrupt, RISING);
+
+  //initialize timer
+  lightTimerStart_ms = millis();
+
+  //Enable waking up from deep sleep by external interrupt
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_33, 1);
+
+  //Initialize wifi
+  connectWifi();
+
+  //Turn lights on
+  lights(ON);
+
+  //delay(2000);
+
+  //lights(OFF);
 
 }
 
-void loop() {
-  /*
-  if (turnLightsOn)
-  {
-    turnLightsOn = false;
-    Serial.println("Turn on!");
-    
-    if(WiFi.status()== WL_CONNECTED)
-    {
-      HTTPClient http;
-      http.begin(String("http://192.168.1.112/api/pB-JbLG1vkk-6axlykmaEBOzM4y3u8lUUZVgbj8M/lights/1/state"));
-      http.addHeader("Content-Type", "text/plain");
-      http.addHeader("Connection", "close");
+void loop() 
+{
+  unsigned long currentTime_ms = millis();
 
-      String put_string;
-      put_string = "{\"on\":";
-      put_string += "true";
-      put_string += "}";
-      int httpResponseCode = http.PUT(put_string);
-      Serial.println(httpResponseCode); 
- 
-      http.end();
-    }
-  }*/
+  if (currentTime_ms - lightTimerStart_ms > lightsOnThreshold_ms)
+  {
+    //No movement withing timeout interval
+    println("Turning lights off");
+    lights(OFF);
+    println("Starting to sleep");
+    esp_deep_sleep_start();
+  }
+  
+  //Intentionally left empty
+  Serial.println(digitalRead(PIR_PIN));
+  delay(1000);
 }
